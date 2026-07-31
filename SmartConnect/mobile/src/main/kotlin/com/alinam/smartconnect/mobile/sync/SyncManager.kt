@@ -5,6 +5,7 @@ import android.content.Context
 import android.media.AudioManager
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.Build
 import com.alinam.smartconnect.mobile.bluetooth.BluetoothManager
 import com.alinam.smartconnect.mobile.data.repository.DeviceInfoRepository
@@ -93,7 +94,6 @@ class SyncManager @Inject constructor(
 
     private fun getActiveMediaInfo(): MediaInfoPayload? {
         return try {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return null
             val msm = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
                 ?: return null
             // Requires MEDIA_CONTENT_CONTROL or notification listener
@@ -102,7 +102,7 @@ class SyncManager @Inject constructor(
             } catch (se: SecurityException) {
                 emptyList()
             }
-            val active = controllers.firstOrNull { it.playbackState?.state == 3 } // STATE_PLAYING = 3
+            val active = controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
                 ?: controllers.firstOrNull()
                 ?: return null
             val metadata = active.metadata ?: return null
@@ -111,7 +111,7 @@ class SyncManager @Inject constructor(
                 title = metadata.getString(android.media.MediaMetadata.METADATA_KEY_TITLE) ?: "",
                 artist = metadata.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST) ?: "",
                 album = metadata.getString(android.media.MediaMetadata.METADATA_KEY_ALBUM) ?: "",
-                isPlaying = playbackState?.state == 3,
+                isPlaying = playbackState?.state == PlaybackState.STATE_PLAYING,
                 duration = metadata.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION),
                 position = playbackState?.position ?: 0L
             )
@@ -128,8 +128,12 @@ class SyncManager @Inject constructor(
                     gson.fromJson(message.payload, RemoteControlPayload::class.java)
                 )
                 MessageType.CLIPBOARD_SYNC -> handleClipboardSync(message.payload)
-                MessageType.FIND_DEVICE -> handleFindPhone()
-                MessageType.FIND_DEVICE_STOP -> stopRinging()
+                // FIND_DEVICE = "find the *phone*" request (originated by phone);
+                // FIND_PHONE = "find the *phone*" request (originated by wear).
+                // Both result in the phone ringing.
+                MessageType.FIND_DEVICE, MessageType.FIND_PHONE -> handleFindPhone()
+                MessageType.FIND_DEVICE_STOP, MessageType.FIND_PHONE_STOP -> stopRinging()
+                MessageType.FIND_DEVICE_ACK -> Timber.d("Watch acknowledged FIND_DEVICE")
                 else -> Timber.d("Unhandled message: ${message.type}")
             }
         }
@@ -159,7 +163,9 @@ class SyncManager @Inject constructor(
     private fun handleRemoteControl(payload: RemoteControlPayload) {
         // Phone-side remote control from watch
         when (payload.action) {
-            "VOLUME_UP", "VOLUME_DOWN" -> handleMediaControl(MediaControlPayload(payload.action))
+            "VOLUME_UP", "VOLUME_DOWN",
+            "PLAY", "PAUSE", "NEXT", "PREV" -> handleMediaControl(MediaControlPayload(payload.action))
+            // Other actions are watch-side only
         }
     }
 
@@ -173,35 +179,53 @@ class SyncManager @Inject constructor(
 
     private var ringtonePlayer: android.media.Ringtone? = null
     private var isRinging = false
+    private var findPhoneJob: Job? = null
 
     private fun handleFindPhone() {
+        // Don't restart if already ringing
+        if (isRinging) return
         isRinging = true
-        // Max volume ring
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_RING)
         am.setStreamVolume(AudioManager.STREAM_RING, maxVol, 0)
         val ringtoneUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)
         ringtonePlayer = android.media.RingtoneManager.getRingtone(context, ringtoneUri)
         ringtonePlayer?.play()
-        // Flashlight strobe
-        scope.launch {
+        findPhoneJob?.cancel()
+        findPhoneJob = scope.launch {
             val camManager = context.getSystemService(android.hardware.camera2.CameraManager::class.java)
-            val cameraId = camManager?.cameraIdList?.firstOrNull() ?: return@launch
-            repeat(20) {
-                if (!isRinging) return@launch
-                try {
-                    camManager.setTorchMode(cameraId, it % 2 == 0)
-                    delay(300)
-                } catch (e: Exception) {}
+            val cameraId = try {
+                camManager?.cameraIdList?.firstOrNull { id ->
+                    camManager.getCameraCharacteristics(id)
+                        .get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                } ?: camManager?.cameraIdList?.firstOrNull()
+            } catch (e: Exception) { null }
+            // Ring for up to 30 seconds, then stop automatically.
+            val timeout = System.currentTimeMillis() + 30_000L
+            while (isRinging && System.currentTimeMillis() < timeout) {
+                if (cameraId != null) {
+                    try { camManager?.setTorchMode(cameraId, true) } catch (e: Exception) {}
+                }
+                delay(400)
+                if (cameraId != null) {
+                    try { camManager?.setTorchMode(cameraId, false) } catch (e: Exception) {}
+                }
+                delay(400)
             }
-            try { camManager?.setTorchMode(cameraId, false) } catch (e: Exception) {}
+            stopRingingInternal()
         }
         bluetoothManager.sendMessage(Message(MessageType.FIND_DEVICE_ACK))
     }
 
     private fun stopRinging() {
+        stopRingingInternal()
+    }
+
+    private fun stopRingingInternal() {
         isRinging = false
-        ringtonePlayer?.stop()
+        findPhoneJob?.cancel()
+        findPhoneJob = null
+        try { ringtonePlayer?.stop() } catch (_: Exception) {}
         ringtonePlayer = null
     }
 }

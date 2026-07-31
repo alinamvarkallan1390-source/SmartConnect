@@ -12,11 +12,13 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import timber.log.Timber
-import java.io.DataInputStream
-import java.io.DataOutputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -33,16 +35,16 @@ class WearBluetoothManager @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var socket: BluetoothSocket? = null
-    private var outputStream: DataOutputStream? = null
-    private var inputStream: DataInputStream? = null
+    private var outputStream: OutputStream? = null
+    private var inputStream: InputStream? = null
     private var readJob: Job? = null
     private var reconnectJob: Job? = null
 
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
-    private val _messages = MutableStateFlow<Message?>(null)
-    val messages: StateFlow<Message?> = _messages.asStateFlow()
+    private val _messages = MutableSharedFlow<Message>(extraBufferCapacity = 64)
+    val messages: kotlinx.coroutines.flow.SharedFlow<Message> = _messages.asSharedFlow()
 
     private var lastConnectedAddress: String? = null
 
@@ -100,8 +102,8 @@ class WearBluetoothManager @Inject constructor(
                 adapter?.cancelDiscovery()
                 sock.connect()
                 socket = sock
-                outputStream = DataOutputStream(sock.outputStream)
-                inputStream = DataInputStream(sock.inputStream)
+                outputStream = sock.outputStream
+                inputStream = sock.inputStream
                 lastConnectedAddress = device.address
                 _isConnected.value = true
                 scanDelayMs = 30000L
@@ -124,15 +126,23 @@ class WearBluetoothManager @Inject constructor(
         readJob = scope.launch {
             try {
                 val stream = inputStream ?: return@launch
+                val buffer = StringBuilder()
+                val byteArray = ByteArray(4096)
                 while (isActive && _isConnected.value) {
-                    val len = stream.readInt()
-                    if (len <= 0 || len > 1_000_000) continue
-                    val buf = ByteArray(len)
-                    stream.readFully(buf)
-                    val json = String(buf, Charsets.UTF_8)
-                    val msg = gson.fromJson(json, Message::class.java)
-                    _messages.value = msg
-                    onMessageReceived?.invoke(msg)
+                    val bytesRead = stream.read(byteArray)
+                    if (bytesRead > 0) {
+                        val received = String(byteArray, 0, bytesRead, Charsets.UTF_8)
+                        buffer.append(received)
+                        while (buffer.contains("\n")) {
+                            val idx = buffer.indexOf("\n")
+                            val json = buffer.substring(0, idx)
+                            buffer.delete(0, idx + 1)
+                            if (json.isNotBlank()) {
+                                handleLine(json)
+                            }
+                        }
+                        if (buffer.length > 1_048_576) buffer.clear()
+                    } else if (bytesRead == -1) break
                 }
             } catch (e: Exception) {
                 Timber.w("Wear read error: ${e.message}")
@@ -141,14 +151,24 @@ class WearBluetoothManager @Inject constructor(
         }
     }
 
+    private fun handleLine(json: String) {
+        try {
+            val msg = gson.fromJson(json, Message::class.java) ?: return
+            _messages.tryEmit(msg)
+            onMessageReceived?.invoke(msg)
+        } catch (e: Exception) {
+            Timber.w(e, "Wear parse error: $json")
+        }
+    }
+
     fun sendMessage(message: Message) {
         scope.launch {
             try {
-                val json = gson.toJson(message).toByteArray(Charsets.UTF_8)
-                outputStream?.let {
-                    it.writeInt(json.size)
-                    it.write(json)
-                    it.flush()
+                val out = outputStream ?: return@launch
+                val json = (gson.toJson(message) + "\n").toByteArray(Charsets.UTF_8)
+                synchronized(out) {
+                    out.write(json)
+                    out.flush()
                 }
             } catch (e: Exception) {
                 Timber.w("Wear send failed: ${e.message}")

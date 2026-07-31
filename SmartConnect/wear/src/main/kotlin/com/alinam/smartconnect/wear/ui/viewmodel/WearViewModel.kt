@@ -28,7 +28,6 @@ class WearViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             btManager.messages.collect { msg ->
-                msg ?: return@collect
                 when (msg.type) {
                     MessageType.DEVICE_INFO_RESPONSE -> {
                         try {

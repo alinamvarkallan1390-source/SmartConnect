@@ -388,6 +388,7 @@ fun DashboardScreen(
 @Composable
 fun RssiBar(rssi: Int) {
     val bars = when {
+        rssi == 0 || rssi == Int.MIN_VALUE -> 0
         rssi >= -60 -> 5
         rssi >= -70 -> 4
         rssi >= -75 -> 3
@@ -406,7 +407,12 @@ fun RssiBar(rssi: Int) {
                     )
             )
         }
-        Text(" ${rssi}dBm", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+        Text(
+            if (rssi == 0 || rssi == Int.MIN_VALUE) " —"
+            else " ${rssi}dBm",
+            color = Color.White.copy(alpha = 0.6f),
+            fontSize = 11.sp
+        )
     }
 }
 
@@ -470,9 +476,9 @@ fun ActionButton(
 
 fun formatBytes(bytes: Long): String {
     return when {
-        bytes >= 1_073_741_824 -> "${{"%.1f".format(bytes / 1_073_741_824.0)}} GB"
-        bytes >= 1_048_576 -> "${{"%.0f".format(bytes / 1_048_576.0)}} MB"
-        bytes >= 1024 -> "${{"%.0f".format(bytes / 1024.0)}} KB"
+        bytes >= 1_073_741_824 -> "${"%.1f".format(bytes / 1_073_741_824.0)} GB"
+        bytes >= 1_048_576 -> "${"%.0f".format(bytes / 1_048_576.0)} MB"
+        bytes >= 1024 -> "${"%.0f".format(bytes / 1024.0)} KB"
         else -> "$bytes B"
     }
 }

@@ -66,8 +66,6 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.READ_MEDIA_VIDEO,
                 Manifest.permission.READ_MEDIA_AUDIO
             )
-        } else {
-            perms += Manifest.permission.READ_EXTERNAL_STORAGE
         }
         permissionsLauncher.launch(perms.toTypedArray())
     }

@@ -37,6 +37,11 @@ class SettingsViewModel @Inject constructor(
         _isMiui.value = batteryHelper.isMiuiDevice()
     }
 
+    /** Re-evaluate battery optimization / MIUI state. Call from screen onResume. */
+    fun refresh() {
+        checkBatteryStatus()
+    }
+
     fun requestIgnoreBatteryOptimizations() {
         batteryHelper.requestIgnoreBatteryOptimizations(context)
     }

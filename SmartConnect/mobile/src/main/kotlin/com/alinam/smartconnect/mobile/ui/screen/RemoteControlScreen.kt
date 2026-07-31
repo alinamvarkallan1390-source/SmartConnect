@@ -141,21 +141,25 @@ fun RemoteControlScreen(
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // REBOOT and SHUTDOWN require privileged system permissions
+                        // and are intentionally NOT exposed in this build.
                         OutlinedButton(
-                            onClick = { viewModel.sendRemoteControl("REBOOT") },
+                            onClick = { /* intentionally disabled */ },
+                            enabled = false,
                             modifier = Modifier.weight(1f)
                         ) {
-                            Icon(Icons.Default.RestartAlt, null, tint = WarningOrange)
+                            Icon(Icons.Default.RestartAlt, null, tint = WarningOrange.copy(alpha = 0.4f))
                             Spacer(Modifier.width(4.dp))
-                            Text("ری‌استارت", color = Color.White)
+                            Text("ری‌استارت", color = Color.White.copy(alpha = 0.4f))
                         }
                         OutlinedButton(
-                            onClick = { viewModel.sendRemoteControl("SHUTDOWN") },
+                            onClick = { /* intentionally disabled */ },
+                            enabled = false,
                             modifier = Modifier.weight(1f)
                         ) {
-                            Icon(Icons.Default.PowerSettingsNew, null, tint = ErrorRed)
+                            Icon(Icons.Default.PowerSettingsNew, null, tint = ErrorRed.copy(alpha = 0.4f))
                             Spacer(Modifier.width(4.dp))
-                            Text("خاموش", color = Color.White)
+                            Text("خاموش", color = Color.White.copy(alpha = 0.4f))
                         }
                     }
                 }

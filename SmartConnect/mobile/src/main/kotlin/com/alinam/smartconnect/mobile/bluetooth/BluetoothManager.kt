@@ -45,6 +45,7 @@ import java.io.OutputStream
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.pow
 
 /**
  * Core Bluetooth manager handling both BLE and Classic connections.
@@ -63,6 +64,7 @@ class BluetoothManager @Inject constructor(
         val SC_RX_UUID: UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
 
+        private const val SCAN_DURATION_MS = 8_000L
         private const val SCAN_PERIOD_CONNECTED = 30_000L   // 30s when connected
         private const val SCAN_PERIOD_DISCONNECTED = 5_000L // 5s when disconnected
         private const val RECONNECT_DELAY = 3_000L
@@ -70,6 +72,7 @@ class BluetoothManager @Inject constructor(
         private const val RSSI_WARNING_THRESHOLD = -80
         private const val RSSI_CRITICAL_THRESHOLD = -90
         private const val HEARTBEAT_INTERVAL = 10_000L
+        private const val MAX_BUFFER_SIZE = 1_048_576 // 1MB cap on receive buffer
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -88,6 +91,7 @@ class BluetoothManager @Inject constructor(
     // BLE
     private var bleGatt: BluetoothGatt? = null
     private var txCharacteristic: BluetoothGattCharacteristic? = null
+    private var bleConnecting = false
 
     // State
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
@@ -118,7 +122,7 @@ class BluetoothManager @Inject constructor(
     private var heartbeatJob: Job? = null
     private var reconnectJob: Job? = null
     private var readJob: Job? = null
-    private var useClassic = true // Prefer Classic for file transfer; BLE for control
+    private val connectedLock = Any()
 
     // ============================================================
     // BLUETOOTH STATE
@@ -151,6 +155,7 @@ class BluetoothManager @Inject constructor(
     private fun performScan() {
         if (!hasPermission(Manifest.permission.BLUETOOTH_SCAN)) return
         leScanner = adapter?.bluetoothLeScanner
+        if (leScanner == null) return
         val settings = ScanSettings.Builder()
             .setScanMode(
                 if (_connectionState.value == ConnectionState.CONNECTED)
@@ -166,15 +171,17 @@ class BluetoothManager @Inject constructor(
             Timber.d("BLE scan started")
             mainHandler.postDelayed({
                 stopScan()
-            }, 8_000L)
+            }, SCAN_DURATION_MS)
         }
     }
 
     private val leScanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
-            _rssi.value = result.rssi
-            updateConnectionQuality(result.rssi)
+            if (result.rssi != Int.MIN_VALUE) {
+                _rssi.value = result.rssi
+                updateConnectionQuality(result.rssi)
+            }
             val current = _scanResults.value.toMutableList()
             if (current.none { it.address == device.address }) {
                 current.add(device)
@@ -207,10 +214,12 @@ class BluetoothManager @Inject constructor(
     // ============================================================
 
     fun connectToDevice(device: BluetoothDevice) {
-        if (_connectionState.value == ConnectionState.CONNECTING ||
-            _connectionState.value == ConnectionState.CONNECTED) return
-        targetDeviceAddress = device.address
-        _connectionState.value = ConnectionState.CONNECTING
+        synchronized(connectedLock) {
+            if (_connectionState.value == ConnectionState.CONNECTING ||
+                _connectionState.value == ConnectionState.CONNECTED) return
+            targetDeviceAddress = device.address
+            _connectionState.value = ConnectionState.CONNECTING
+        }
         scope.launch {
             connectClassic(device)
         }
@@ -219,7 +228,12 @@ class BluetoothManager @Inject constructor(
     private suspend fun connectClassic(device: BluetoothDevice) {
         try {
             if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) return
-            classicSocket?.close()
+            // Always close the old socket before creating a new one
+            try { classicSocket?.close() } catch (_: Exception) {}
+            classicSocket = null
+            classicInputStream = null
+            classicOutputStream = null
+
             val socket = if (ActivityCompat.checkSelfPermission(
                     context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
                 device.createRfcommSocketToServiceRecord(SPP_UUID)
@@ -245,7 +259,10 @@ class BluetoothManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "Classic BT connection failed")
             _connectionState.value = ConnectionState.DISCONNECTED
-            scheduleReconnect(device)
+            // Don't schedule reconnect for null target (manual connection failure)
+            if (targetDeviceAddress != null) {
+                scheduleReconnect(device)
+            }
         }
     }
 
@@ -255,9 +272,16 @@ class BluetoothManager @Inject constructor(
 
     fun connectBle(device: BluetoothDevice) {
         if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) return
+        if (bleConnecting) return
+        bleConnecting = true
         if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
             == PackageManager.PERMISSION_GRANTED) {
+            try {
+                bleGatt?.close()
+            } catch (_: Exception) {}
             bleGatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        } else {
+            bleConnecting = false
         }
     }
 
@@ -272,13 +296,21 @@ class BluetoothManager @Inject constructor(
                     }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    Timber.w("BLE GATT disconnected")
-                    _connectionState.value = ConnectionState.DISCONNECTED
+                    Timber.w("BLE GATT disconnected status=$status")
+                    bleConnecting = false
+                    // Only flip to DISCONNECTED if not already in CONNECTED via Classic
+                    if (classicSocket == null || !classicSocket!!.isConnected) {
+                        _connectionState.value = ConnectionState.DISCONNECTED
+                    }
                 }
             }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Timber.e("Service discovery failed: $status")
+                return
+            }
             val service = gatt.getService(SC_SERVICE_UUID) ?: return
             txCharacteristic = service.getCharacteristic(SC_TX_UUID)
             val rxChar = service.getCharacteristic(SC_RX_UUID)
@@ -287,11 +319,12 @@ class BluetoothManager @Inject constructor(
                     == PackageManager.PERMISSION_GRANTED) {
                     gatt.setCharacteristicNotification(rxChar, true)
                     val descriptor = rxChar.getDescriptor(CCCD_UUID)
-                    descriptor?.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    gatt.writeDescriptor(descriptor)
+                    if (descriptor != null) {
+                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        gatt.writeDescriptor(descriptor)
+                    }
                 }
             }
-            _connectionState.value = ConnectionState.CONNECTED
         }
 
         override fun onCharacteristicChanged(
@@ -305,8 +338,10 @@ class BluetoothManager @Inject constructor(
         }
 
         override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) {
-            _rssi.value = rssi
-            updateConnectionQuality(rssi)
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                _rssi.value = rssi
+                updateConnectionQuality(rssi)
+            }
         }
     }
 
@@ -315,14 +350,18 @@ class BluetoothManager @Inject constructor(
     // ============================================================
 
     fun sendMessage(message: Message) {
-        val data = (message.toJson() + "
-").toByteArray(Charsets.UTF_8)
+        val data = (message.toJson() + "\n").toByteArray(Charsets.UTF_8)
         scope.launch {
             try {
-                classicOutputStream?.let {
-                    it.write(data)
-                    it.flush()
-                } ?: sendViaBle(data)
+                val out = classicOutputStream
+                if (out != null) {
+                    synchronized(out) {
+                        out.write(data)
+                        out.flush()
+                    }
+                } else {
+                    sendViaBle(data)
+                }
             } catch (e: Exception) {
                 Timber.e(e, "Send failed")
                 handleDisconnection()
@@ -333,10 +372,15 @@ class BluetoothManager @Inject constructor(
     fun sendRawBytes(data: ByteArray) {
         scope.launch {
             try {
-                classicOutputStream?.let {
-                    it.write(data)
-                    it.flush()
-                } ?: sendViaBle(data)
+                val out = classicOutputStream
+                if (out != null) {
+                    synchronized(out) {
+                        out.write(data)
+                        out.flush()
+                    }
+                } else {
+                    sendViaBle(data)
+                }
             } catch (e: Exception) {
                 Timber.e(e, "Raw send failed")
                 handleDisconnection()
@@ -348,8 +392,8 @@ class BluetoothManager @Inject constructor(
         if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) return
         val gatt = bleGatt ?: return
         val tx = txCharacteristic ?: return
-        // BLE MTU is typically 512 bytes; chunk if necessary
-        val mtu = 512
+        // Conservative BLE MTU
+        val mtu = 244
         data.toList().chunked(mtu).forEach { chunk ->
             tx.value = chunk.toByteArray()
             if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
@@ -372,16 +416,23 @@ class BluetoothManager @Inject constructor(
                         val received = String(byteArray, 0, bytesRead, Charsets.UTF_8)
                         buffer.append(received)
                         // Process complete messages delimited by newline
-                        while (buffer.contains("
-")) {
-                            val newlineIdx = buffer.indexOf("
-")
+                        while (buffer.contains("\n")) {
+                            val newlineIdx = buffer.indexOf("\n")
                             val jsonMsg = buffer.substring(0, newlineIdx)
                             buffer.delete(0, newlineIdx + 1)
                             if (jsonMsg.isNotBlank()) {
                                 processIncomingData(jsonMsg.toByteArray())
                             }
                         }
+                        // Prevent unbounded growth on malformed data
+                        if (buffer.length > MAX_BUFFER_SIZE) {
+                            Timber.w("Buffer overflow, dropping accumulated data")
+                            buffer.clear()
+                        }
+                    } else if (bytesRead == -1) {
+                        // EOF
+                        Timber.w("Classic BT stream returned EOF")
+                        break
                     }
                 } catch (e: Exception) {
                     Timber.e(e, "Read error")
@@ -395,10 +446,11 @@ class BluetoothManager @Inject constructor(
     private fun processIncomingData(data: ByteArray) {
         try {
             val json = data.toString(Charsets.UTF_8).trim()
+            if (json.isEmpty()) return
             val message = Message.fromJson(json)
             scope.launch { _incomingMessages.emit(message) }
         } catch (e: Exception) {
-            Timber.e(e, "Failed to parse message")
+            Timber.e(e, "Failed to parse message: ${data.size} bytes")
         }
     }
 
@@ -408,7 +460,7 @@ class BluetoothManager @Inject constructor(
 
     private fun scheduleReconnect(device: BluetoothDevice) {
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            Timber.w("Max reconnect attempts reached")
+            Timber.w("Max reconnect attempts reached, falling back to scan")
             reconnectAttempts = 0
             startSmartScan()
             return
@@ -423,14 +475,17 @@ class BluetoothManager @Inject constructor(
     }
 
     private fun handleDisconnection() {
+        val device = _connectedDevice.value?.device
+        try { classicInputStream?.close() } catch (_: Exception) {}
+        try { classicOutputStream?.close() } catch (_: Exception) {}
+        try { classicSocket?.close() } catch (_: Exception) {}
         classicSocket = null
         classicInputStream = null
         classicOutputStream = null
         _connectionState.value = ConnectionState.DISCONNECTED
         heartbeatJob?.cancel()
-        val device = _connectedDevice.value?.device
         _connectedDevice.value = null
-        device?.let { scheduleReconnect(it) }
+        device?.let { if (targetDeviceAddress != null) scheduleReconnect(it) }
     }
 
     // ============================================================
@@ -445,10 +500,11 @@ class BluetoothManager @Inject constructor(
                 val start = System.currentTimeMillis()
                 sendMessage(Message(MessageType.HEARTBEAT))
                 // Measure RSSI periodically
-                bleGatt?.let {
+                val gatt = bleGatt
+                if (gatt != null) {
                     if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
                         == PackageManager.PERMISSION_GRANTED) {
-                        it.readRemoteRssi()
+                        try { gatt.readRemoteRssi() } catch (_: Exception) {}
                     }
                 }
                 _latency.value = System.currentTimeMillis() - start
@@ -475,12 +531,18 @@ class BluetoothManager @Inject constructor(
         }
     }
 
+    /**
+     * Rough distance estimate from RSSI. Returns -1 if unknown.
+     * Free-space path loss approximation (n=2..4 depending on environment).
+     */
     fun estimateDistance(): Double {
         val rssi = _rssi.value
-        if (rssi == 0) return -1.0
-        val ratio = rssi * 1.0 / -59.0
-        return if (ratio < 1.0) Math.pow(ratio, 10.0)
-        else (0.89976) * Math.pow(ratio, 7.7095) + 0.111
+        if (rssi == 0 || rssi == Int.MIN_VALUE) return -1.0
+        val txPower = -59.0 // dBm at 1 meter (typical)
+        if (rssi > txPower) return 0.5 // closer than 1m
+        val n = 2.5
+        val ratio = (txPower - rssi) / (10.0 * n)
+        return 10.0.pow(ratio)
     }
 
     fun disconnect() {
@@ -488,15 +550,21 @@ class BluetoothManager @Inject constructor(
         reconnectJob?.cancel()
         readJob?.cancel()
         scanJob?.cancel()
+        targetDeviceAddress = null
+        try { classicInputStream?.close() } catch (_: Exception) {}
+        try { classicOutputStream?.close() } catch (_: Exception) {}
+        try { classicSocket?.close() } catch (_: Exception) {}
+        classicSocket = null
+        classicInputStream = null
+        classicOutputStream = null
         try {
-            classicSocket?.close()
-            if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT) &&
-                ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
-                == PackageManager.PERMISSION_GRANTED) {
-                bleGatt?.close()
+            bleGatt?.let {
+                if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
+                    == PackageManager.PERMISSION_GRANTED) {
+                    it.close()
+                }
             }
         } catch (e: Exception) { Timber.e(e) }
-        classicSocket = null
         bleGatt = null
         _connectionState.value = ConnectionState.DISCONNECTED
         _connectedDevice.value = null

@@ -1,6 +1,5 @@
 package com.alinam.smartconnect.wear.ui
 
-import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -9,8 +8,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -25,18 +26,34 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.alinam.smartconnect.wear.sensor.WakeToRaiseDetector
+import com.alinam.smartconnect.wear.service.WakeToRaiseService
 import com.alinam.smartconnect.wear.service.WearBluetoothService
 import com.alinam.smartconnect.wear.ui.viewmodel.WearViewModel
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class WearMainActivity : ComponentActivity() {
+
+    @Inject lateinit var wakeDetector: WakeToRaiseDetector
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WearBluetoothService.start(this)
+        // Wake-to-raise runs in its own service so it works even without
+        // the phone / bluetooth connection.
+        WakeToRaiseService.start(this)
         setContent {
             WearTheme {
-                WearMainScreen()
+                WearMainScreen(
+                    wakeToRaiseEnabled = wakeDetector.isEnabled,
+                    onToggleWakeToRaise = { enabled ->
+                        wakeDetector.isEnabled = enabled
+                        if (enabled) WakeToRaiseService.start(this)
+                        else WakeToRaiseService.stop(this)
+                    }
+                )
             }
         }
     }
@@ -56,7 +73,11 @@ fun WearTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
-fun WearMainScreen(viewModel: WearViewModel = hiltViewModel()) {
+fun WearMainScreen(
+    viewModel: WearViewModel = hiltViewModel(),
+    wakeToRaiseEnabled: Boolean = true,
+    onToggleWakeToRaise: (Boolean) -> Unit = {}
+) {
     val isConnected by viewModel.isConnected.collectAsStateWithLifecycle()
     val phoneInfo by viewModel.phoneInfo.collectAsStateWithLifecycle()
     var isFindingPhone by remember { mutableStateOf(false) }
@@ -77,7 +98,10 @@ fun WearMainScreen(viewModel: WearViewModel = hiltViewModel()) {
         contentAlignment = Alignment.Center
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -161,6 +185,57 @@ fun WearMainScreen(viewModel: WearViewModel = hiltViewModel()) {
                     color = Color.White.copy(alpha = 0.7f),
                     fontSize = 10.sp
                 )
+            }
+
+            // WAKE-TO-RAISE TOGGLE (works independently of phone)
+            Spacer(modifier = Modifier.height(4.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (wakeToRaiseEnabled)
+                        Color(0xFF6C63FF).copy(alpha = 0.18f)
+                    else
+                        Color.White.copy(alpha = 0.05f)
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onToggleWakeToRaise(!wakeToRaiseEnabled) }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Watch,
+                        null,
+                        tint = if (wakeToRaiseEnabled) Color(0xFF6C63FF) else Color.White.copy(alpha = 0.4f),
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Wake-to-Raise",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            if (wakeToRaiseEnabled) "روشن — بدون گوشی هم کار می‌کند"
+                            else "خاموش",
+                            color = Color.White.copy(alpha = 0.55f),
+                            fontSize = 10.sp
+                        )
+                    }
+                    Switch(
+                        checked = wakeToRaiseEnabled,
+                        onCheckedChange = { onToggleWakeToRaise(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = Color(0xFF6C63FF)
+                        )
+                    )
+                }
             }
         }
     }

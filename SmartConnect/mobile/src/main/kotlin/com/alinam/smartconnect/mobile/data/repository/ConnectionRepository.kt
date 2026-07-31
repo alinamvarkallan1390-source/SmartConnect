@@ -4,7 +4,6 @@ import com.alinam.smartconnect.mobile.data.db.dao.ConnectionLogDao
 import com.alinam.smartconnect.mobile.data.db.dao.DeviceSettingsDao
 import com.alinam.smartconnect.mobile.data.db.entity.ConnectionLogEntity
 import com.alinam.smartconnect.mobile.data.db.entity.DeviceSettingsEntity
-import com.alinam.smartconnect.mobile.data.model.ConnectionState
 import com.alinam.smartconnect.mobile.bluetooth.BluetoothManager
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject

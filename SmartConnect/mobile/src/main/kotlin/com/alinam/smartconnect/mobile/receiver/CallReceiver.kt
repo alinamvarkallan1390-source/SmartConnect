@@ -1,11 +1,15 @@
 package com.alinam.smartconnect.mobile.receiver
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.database.Cursor
+import android.os.Build
 import android.provider.ContactsContract
 import android.telephony.TelephonyManager
+import androidx.core.content.ContextCompat
 import com.alinam.smartconnect.mobile.bluetooth.BluetoothManager
 import com.alinam.smartconnect.shared.protocol.CallEventPayload
 import com.alinam.smartconnect.shared.protocol.Message
@@ -21,6 +25,10 @@ class CallReceiver : BroadcastReceiver() {
     @Inject lateinit var bluetoothManager: BluetoothManager
 
     override fun onReceive(context: Context, intent: Intent) {
+        // On API 31+ TelephonyManager.ACTION_PHONE_STATE_CHANGED still fires,
+        // but the EXTRA_INCOMING_NUMBER is only delivered to apps holding the
+        // READ_PHONE_STATE permission and a default dialer / system role.
+        // We attempt a best-effort lookup; missing data is acceptable.
         val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE) ?: return
         val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER) ?: ""
 
@@ -31,16 +39,29 @@ class CallReceiver : BroadcastReceiver() {
             else -> return
         }
 
-        val contactName = getContactName(context, number)
+        // Only attach the contact name if the user has granted READ_CONTACTS
+        val contactName = if (
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            getContactName(context, number)
+        } else {
+            ""
+        }
+
         val payload = CallEventPayload(
             state = callState,
             number = number,
             contactName = contactName
         )
-        bluetoothManager.sendMessage(
-            Message(MessageType.CALL_EVENT, Gson().toJson(payload))
-        )
-        Timber.d("Call event: $callState from $number")
+        try {
+            bluetoothManager.sendMessage(
+                Message(MessageType.CALL_EVENT, Gson().toJson(payload))
+            )
+            Timber.d("Call event: $callState from $number")
+        } catch (e: Exception) {
+            Timber.w(e, "sendMessage failed in CallReceiver")
+        }
     }
 
     private fun getContactName(context: Context, number: String): String {

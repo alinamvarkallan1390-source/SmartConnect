@@ -12,7 +12,7 @@ class SmartConnectApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        if (Build.DEBUG_LEVEL > 0 || BuildConfig.DEBUG) Timber.plant(Timber.DebugTree())
+        if (BuildConfig.DEBUG) Timber.plant(Timber.DebugTree())
         createNotificationChannel()
     }
 

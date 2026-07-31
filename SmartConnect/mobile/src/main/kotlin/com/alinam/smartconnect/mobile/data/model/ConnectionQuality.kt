@@ -28,6 +28,6 @@ fun rssiToQuality(rssi: Int): ConnectionQuality = when {
     rssi >= -60 -> ConnectionQuality.EXCELLENT
     rssi >= -70 -> ConnectionQuality.GOOD
     rssi >= -80 -> ConnectionQuality.FAIR
-    rssi > -90 -> ConnectionQuality.POOR
-    else -> ConnectionQuality.UNKNOWN
+    rssi >= -90 -> ConnectionQuality.WEAK
+    else -> ConnectionQuality.POOR
 }
