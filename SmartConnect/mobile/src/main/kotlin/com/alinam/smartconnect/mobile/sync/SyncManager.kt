@@ -128,8 +128,12 @@ class SyncManager @Inject constructor(
                     gson.fromJson(message.payload, RemoteControlPayload::class.java)
                 )
                 MessageType.CLIPBOARD_SYNC -> handleClipboardSync(message.payload)
-                MessageType.FIND_DEVICE -> handleFindPhone()
-                MessageType.FIND_DEVICE_STOP -> stopRinging()
+                // FIND_DEVICE = "find the *phone*" request (originated by phone);
+                // FIND_PHONE = "find the *phone*" request (originated by wear).
+                // Both result in the phone ringing.
+                MessageType.FIND_DEVICE, MessageType.FIND_PHONE -> handleFindPhone()
+                MessageType.FIND_DEVICE_STOP, MessageType.FIND_PHONE_STOP -> stopRinging()
+                MessageType.FIND_DEVICE_ACK -> Timber.d("Watch acknowledged FIND_DEVICE")
                 else -> Timber.d("Unhandled message: ${message.type}")
             }
         }

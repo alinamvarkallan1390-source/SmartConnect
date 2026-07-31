@@ -27,15 +27,22 @@ class FileTransferViewModel @Inject constructor(
 
     fun sendFileFromUri(uri: Uri) {
         viewModelScope.launch {
+            var tempFile: File? = null
             try {
                 val fileName = getFileName(uri)
-                val tempFile = File(context.cacheDir, fileName)
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(tempFile).use { output -> input.copyTo(output) }
+                tempFile = File(context.cacheDir, fileName)
+                val input = context.contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Cannot open URI: $uri")
+                input.use { src ->
+                    FileOutputStream(tempFile).use { dst -> src.copyTo(dst) }
+                }
+                if (!tempFile.exists() || tempFile.length() == 0L) {
+                    throw IllegalStateException("Empty file")
                 }
                 fileTransferRepository.sendFile(tempFile.absolutePath)
             } catch (e: Exception) {
                 e.printStackTrace()
+                tempFile?.delete()
             }
         }
     }

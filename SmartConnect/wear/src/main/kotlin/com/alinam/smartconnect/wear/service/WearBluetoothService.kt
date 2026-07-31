@@ -13,7 +13,6 @@ import androidx.core.app.NotificationCompat
 import com.alinam.smartconnect.shared.protocol.Message
 import com.alinam.smartconnect.shared.protocol.MessageType
 import com.alinam.smartconnect.wear.bluetooth.WearBluetoothManager
-import com.alinam.smartconnect.wear.sensor.WakeToRaiseDetector
 import com.alinam.smartconnect.wear.ui.WearMainActivity
 import com.alinam.smartconnect.wear.util.DeviceInfoCollectorWear
 import com.alinam.smartconnect.wear.util.FindPhoneHelper
@@ -43,7 +42,6 @@ class WearBluetoothService : Service() {
     }
 
     @Inject lateinit var btManager: WearBluetoothManager
-    @Inject lateinit var wakeDetector: WakeToRaiseDetector
     @Inject lateinit var vibrateHelper: VibrateHelper
     @Inject lateinit var findPhoneHelper: FindPhoneHelper
     @Inject lateinit var deviceInfoCollector: DeviceInfoCollectorWear
@@ -58,7 +56,8 @@ class WearBluetoothService : Service() {
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("در حال اجرا..."))
         acquireWakeLock()
-        wakeDetector.start()
+        // wakeDetector is now started by WakeToRaiseService so it keeps
+        // working even when this service is not running (e.g. no phone).
         btManager.onMessageReceived = { msg -> handleMessage(msg) }
         btManager.startSmartReconnect()
         observeConnection()
@@ -115,11 +114,15 @@ class WearBluetoothService : Service() {
             MessageType.SMS -> showSmsNotification(msg.payload)
             MessageType.HEARTBEAT -> btManager.sendMessage(Message(MessageType.HEARTBEAT_ACK))
             MessageType.FIND_PHONE -> {
-                // Phone initiated "find my watch"; the watch should beep/vibrate
-                vibrateHelper.continuousVibrate()
+                // The phone is asking the wear to do something — but on this
+                // protocol the wear is the *sender* of FIND_PHONE (asking the
+                // phone to ring). If we receive FIND_PHONE here it's a loop
+                // and we just ignore it.
+                Timber.w("Received FIND_PHONE (should not happen on wear)")
             }
             MessageType.FIND_PHONE_STOP -> {
-                vibrateHelper.stopVibrate()
+                // No-op; the wear never started ringing in response to a
+                // FIND_PHONE_STOP. Keep handler for protocol symmetry.
             }
         }
     }
@@ -270,7 +273,8 @@ class WearBluetoothService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         deviceInfoJob?.cancel()
-        wakeDetector.stop()
+        // Do NOT stop wakeDetector here - it is owned by WakeToRaiseService
+        // and should keep running independently of the bluetooth service.
         btManager.disconnect()
         scope.cancel()
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) { }
