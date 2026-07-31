@@ -179,44 +179,53 @@ class SyncManager @Inject constructor(
 
     private var ringtonePlayer: android.media.Ringtone? = null
     private var isRinging = false
+    private var findPhoneJob: Job? = null
 
     private fun handleFindPhone() {
+        // Don't restart if already ringing
+        if (isRinging) return
         isRinging = true
-        // Max volume ring
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_RING)
         am.setStreamVolume(AudioManager.STREAM_RING, maxVol, 0)
         val ringtoneUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)
         ringtonePlayer = android.media.RingtoneManager.getRingtone(context, ringtoneUri)
         ringtonePlayer?.play()
-        // Flashlight strobe
-        scope.launch {
+        findPhoneJob?.cancel()
+        findPhoneJob = scope.launch {
             val camManager = context.getSystemService(android.hardware.camera2.CameraManager::class.java)
-                ?: return@launch
             val cameraId = try {
-                camManager.cameraIdList.firstOrNull { id ->
+                camManager?.cameraIdList?.firstOrNull { id ->
                     camManager.getCameraCharacteristics(id)
                         .get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-                } ?: camManager.cameraIdList.firstOrNull()
-            } catch (e: Exception) { null } ?: return@launch
-            repeat(20) {
-                if (!isRinging) return@launch
-                try {
-                    camManager.setTorchMode(cameraId, it % 2 == 0)
-                    delay(300)
-                } catch (e: Exception) {
-                    Timber.w(e, "Torch toggle failed")
-                    return@launch
+                } ?: camManager?.cameraIdList?.firstOrNull()
+            } catch (e: Exception) { null }
+            // Ring for up to 30 seconds, then stop automatically.
+            val timeout = System.currentTimeMillis() + 30_000L
+            while (isRinging && System.currentTimeMillis() < timeout) {
+                if (cameraId != null) {
+                    try { camManager?.setTorchMode(cameraId, true) } catch (e: Exception) {}
                 }
+                delay(400)
+                if (cameraId != null) {
+                    try { camManager?.setTorchMode(cameraId, false) } catch (e: Exception) {}
+                }
+                delay(400)
             }
-            try { camManager.setTorchMode(cameraId, false) } catch (e: Exception) {}
+            stopRingingInternal()
         }
         bluetoothManager.sendMessage(Message(MessageType.FIND_DEVICE_ACK))
     }
 
     private fun stopRinging() {
+        stopRingingInternal()
+    }
+
+    private fun stopRingingInternal() {
         isRinging = false
-        ringtonePlayer?.stop()
+        findPhoneJob?.cancel()
+        findPhoneJob = null
+        try { ringtonePlayer?.stop() } catch (_: Exception) {}
         ringtonePlayer = null
     }
 }

@@ -96,10 +96,11 @@ class WakeToRaiseDetector @Inject constructor(
             return
         }
         isRunning = true
-        // Use GAME / UI rate for gravity + accel so the gesture is responsive
-        // without being a battery hog. Gyro is only needed briefly, so NORMAL is fine.
-        accelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-        gravSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        // Use UI rate for gravity + accel — fast enough to detect a wrist
+        // raise within ~50ms without triggering the
+        // HIGH_SAMPLING_RATE_SENSORS permission requirement (Android 12+).
+        accelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        gravSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         gyroSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
         // Significant motion sensor pre-warms the pipeline cheaply.
         sigMotionSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
