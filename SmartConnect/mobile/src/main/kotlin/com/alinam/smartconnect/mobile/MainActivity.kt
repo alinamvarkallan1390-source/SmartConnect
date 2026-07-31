@@ -28,7 +28,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
-        requestRequiredPermissions()
         setContent {
             SmartConnectTheme {
                 Surface(
@@ -39,6 +38,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        requestRequiredPermissions()
     }
 
     private fun requestRequiredPermissions() {

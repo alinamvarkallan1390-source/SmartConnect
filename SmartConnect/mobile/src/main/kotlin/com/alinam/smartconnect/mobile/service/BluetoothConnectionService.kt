@@ -73,6 +73,8 @@ class BluetoothConnectionService : Service() {
         }
     }
 
+    private var userRequestedStop = false
+
     override fun onCreate() {
         super.onCreate()
         acquireWakeLock()
@@ -89,13 +91,14 @@ class BluetoothConnectionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                userRequestedStop = true
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
             ACTION_FIND_WATCH -> sendFindWatch()
             ACTION_STOP_FIND -> stopFindWatch()
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -107,17 +110,22 @@ class BluetoothConnectionService : Service() {
         bluetoothManager.disconnect()
         toneGenerator?.release()
         super.onDestroy()
-        // Restart service if killed
-        val restartIntent = Intent(applicationContext, BluetoothConnectionService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(restartIntent)
-        } else {
-            startService(restartIntent)
+        // Restart service only if the user did NOT explicitly stop it.
+        // (Otherwise ACTION_STOP would loop forever.)
+        if (!userRequestedStop) {
+            val restartIntent = Intent(applicationContext, BluetoothConnectionService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(restartIntent)
+            } else {
+                startService(restartIntent)
+            }
         }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
+        // On task-removed, restart is desired so the connection survives
+        // the user swiping the app from recents.
         val restartIntent = Intent(applicationContext, BluetoothConnectionService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(restartIntent)
