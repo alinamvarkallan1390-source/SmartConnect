@@ -61,7 +61,7 @@ data class FileTransferChunkPayload(
     val transferId: String,
     val chunkIndex: Int,
     val totalChunks: Int,
-    val data: ByteArray,
+    val data: String, // Base64-encoded chunk
     val checksum: String
 )
 

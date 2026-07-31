@@ -1,5 +1,6 @@
 package com.alinam.smartconnect.mobile.ui.screen
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -12,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
@@ -114,23 +116,19 @@ fun SettingsNavItem(
     sub: String,
     onClick: () -> Unit
 ) {
-    GlassCard(modifier = Modifier.fillMaxWidth().then(
-        Modifier.clickable(onClick = onClick)
-    ), padding = 16.dp) {
+    GlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        padding = 16.dp
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Icon(icon, null, tint = Purple, modifier = Modifier.size(24.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(label, color = Color.White, fontWeight = FontWeight.Medium)
-                Text(sub, color = Color.White.copy(alpha = 0.5f), fontSize = 12.dp.value.sp)
+                Text(sub, color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
             }
             Icon(Icons.Default.ChevronRight, null, tint = Color.White.copy(alpha = 0.4f))
         }
     }
 }
-
-private fun Modifier.clickable(onClick: () -> Unit) =
-    this.then(Modifier.wrapContentSize().let {
-        androidx.compose.foundation.clickable(onClick = onClick).let { m ->
-            Modifier.then(m)
-        }
-    })

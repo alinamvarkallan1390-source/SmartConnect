@@ -6,7 +6,6 @@ import com.alinam.smartconnect.mobile.data.db.entity.FileTransferEntity
 import com.alinam.smartconnect.mobile.data.model.FileTransferState
 import com.alinam.smartconnect.mobile.bluetooth.BluetoothManager
 import com.alinam.smartconnect.mobile.security.SecurityManager
-import com.alinam.smartconnect.shared.protocol.FileTransferAckPayload
 import com.alinam.smartconnect.shared.protocol.FileTransferChunkPayload
 import com.alinam.smartconnect.shared.protocol.FileTransferStartPayload
 import com.alinam.smartconnect.shared.protocol.Message
@@ -40,21 +39,22 @@ class FileTransferRepository @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val gson = Gson()
     private val CHUNK_SIZE = 4096
+    private val BUFFER_BYTES = ByteArray(CHUNK_SIZE)
 
     private val _transferState = MutableStateFlow<FileTransferState>(FileTransferState.Idle)
     val transferState: StateFlow<FileTransferState> = _transferState.asStateFlow()
 
     private var transferJob: Job? = null
-    private var isPaused = false
-    private var isCancelled = false
+    @Volatile private var isPaused = false
+    @Volatile private var isCancelled = false
     private var currentTransferId: String? = null
 
     fun getAllTransfers(): Flow<List<FileTransferEntity>> = fileTransferDao.getAllTransfers()
 
     fun sendFile(filePath: String) {
         val file = File(filePath)
-        if (!file.exists()) {
-            _transferState.value = FileTransferState.Failed("File not found: $filePath")
+        if (!file.exists() || !file.canRead()) {
+            _transferState.value = FileTransferState.Failed("File not readable: $filePath")
             return
         }
         val transferId = UUID.randomUUID().toString()
@@ -64,98 +64,136 @@ class FileTransferRepository @Inject constructor(
 
         transferJob?.cancel()
         transferJob = scope.launch {
-            try {
-                val sessionKey = securityManager.generateSessionKey()
-                val fileData = file.readBytes()
-                val checksum = securityManager.computeChecksum(fileData)
-                val totalChunks = (fileData.size + CHUNK_SIZE - 1) / CHUNK_SIZE
-                val mimeType = getMimeType(filePath)
+            FileInputStream(file).use { input ->
+                try {
+                    val sessionKey = securityManager.generateSessionKey()
+                    val fileSize = file.length()
+                    val totalChunks = ((fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE).toInt()
+                    val mimeType = getMimeType(filePath)
+                    // First pass: compute checksum
+                    val checksum = computeFileChecksum(file, sessionKey)
 
-                // Save to DB
-                fileTransferDao.insert(FileTransferEntity(
-                    transferId = transferId,
-                    fileName = file.name,
-                    filePath = filePath,
-                    fileSize = file.length(),
-                    mimeType = mimeType,
-                    direction = "SEND",
-                    status = "IN_PROGRESS",
-                    checksum = checksum
-                ))
-
-                // Send START packet
-                val startPayload = FileTransferStartPayload(
-                    transferId = transferId,
-                    fileName = file.name,
-                    fileSize = file.length(),
-                    mimeType = mimeType,
-                    checksum = checksum,
-                    chunkSize = CHUNK_SIZE,
-                    totalChunks = totalChunks
-                )
-                bluetoothManager.sendMessage(Message(MessageType.FILE_TRANSFER_START, gson.toJson(startPayload)))
-                delay(200)
-
-                var bytesSent = 0L
-                val startTime = System.currentTimeMillis()
-
-                for (i in 0 until totalChunks) {
-                    while (isPaused && !isCancelled) delay(500)
-                    if (isCancelled) {
-                        _transferState.value = FileTransferState.Failed("Cancelled")
-                        fileTransferDao.markFailed(transferId)
-                        return@launch
-                    }
-
-                    val offset = i * CHUNK_SIZE
-                    val length = minOf(CHUNK_SIZE, fileData.size - offset)
-                    val chunk = fileData.copyOfRange(offset, offset + length)
-
-                    // Encrypt chunk
-                    val encryptedChunk = securityManager.encryptWithSessionKey(chunk, sessionKey)
-                    val chunkChecksum = securityManager.computeChecksum(chunk)
-
-                    val chunkPayload = FileTransferChunkPayload(
+                    // Save to DB
+                    fileTransferDao.insert(FileTransferEntity(
                         transferId = transferId,
-                        chunkIndex = i,
-                        totalChunks = totalChunks,
-                        data = encryptedChunk,
-                        checksum = chunkChecksum
+                        fileName = file.name,
+                        filePath = filePath,
+                        fileSize = fileSize,
+                        mimeType = mimeType,
+                        direction = "SEND",
+                        status = "IN_PROGRESS",
+                        checksum = checksum
+                    ))
+
+                    // Send SESSION_KEY first so receiver can decrypt
+                    val sessionKeyB64 = android.util.Base64.encodeToString(
+                        sessionKey, android.util.Base64.NO_WRAP
                     )
                     bluetoothManager.sendMessage(
-                        Message(MessageType.FILE_TRANSFER_CHUNK, gson.toJson(chunkPayload))
+                        Message(MessageType.SESSION_KEY_EXCHANGE, sessionKeyB64)
                     )
+                    delay(200)
 
-                    bytesSent += length
-                    val elapsed = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
-                    val speedBps = bytesSent * 1000 / elapsed
-                    val remaining = if (speedBps > 0) (file.length() - bytesSent) / speedBps else 0
-                    val progress = bytesSent.toFloat() / file.length()
-
-                    _transferState.value = FileTransferState.Transferring(
-                        fileName = file.name,
-                        progress = progress,
-                        speedBps = speedBps,
-                        remainingSeconds = remaining,
+                    // Send START packet
+                    val startPayload = FileTransferStartPayload(
                         transferId = transferId,
-                        isPaused = isPaused
+                        fileName = file.name,
+                        fileSize = fileSize,
+                        mimeType = mimeType,
+                        checksum = checksum,
+                        chunkSize = CHUNK_SIZE,
+                        totalChunks = totalChunks
                     )
-                    fileTransferDao.updateProgress(transferId, "IN_PROGRESS", progress)
+                    bluetoothManager.sendMessage(
+                        Message(MessageType.FILE_TRANSFER_START, gson.toJson(startPayload))
+                    )
+                    delay(200)
 
-                    delay(10) // Flow control - avoid buffer overflow
+                    var bytesSent = 0L
+                    val startTime = System.currentTimeMillis()
+
+                    for (i in 0 until totalChunks) {
+                        while (isPaused && !isCancelled) delay(500)
+                        if (isCancelled) {
+                            _transferState.value = FileTransferState.Failed("Cancelled")
+                            fileTransferDao.markFailed(transferId)
+                            return@launch
+                        }
+
+                        val read = input.read(BUFFER_BYTES)
+                        if (read <= 0) {
+                            Timber.w("Unexpected EOF at chunk $i (read=$read)")
+                            break
+                        }
+                        val chunk: ByteArray = if (read == CHUNK_SIZE) BUFFER_BYTES
+                            else BUFFER_BYTES.copyOf(read)
+
+                        val encryptedChunk = securityManager.encryptWithSessionKey(chunk, sessionKey)
+                        val chunkChecksum = securityManager.computeChecksum(chunk)
+
+                        val chunkPayload = FileTransferChunkPayload(
+                            transferId = transferId,
+                            chunkIndex = i,
+                            totalChunks = totalChunks,
+                            data = encryptedChunk,
+                            checksum = chunkChecksum
+                        )
+                        bluetoothManager.sendMessage(
+                            Message(MessageType.FILE_TRANSFER_CHUNK, gson.toJson(chunkPayload))
+                        )
+
+                        bytesSent += read
+                        val elapsed = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
+                        val speedBps = bytesSent * 1000 / elapsed
+                        val remaining = if (speedBps > 0) (fileSize - bytesSent) / speedBps else 0
+                        val progress = if (fileSize > 0) bytesSent.toFloat() / fileSize else 1f
+
+                        _transferState.value = FileTransferState.Transferring(
+                            fileName = file.name,
+                            progress = progress.coerceIn(0f, 1f),
+                            speedBps = speedBps,
+                            remainingSeconds = remaining,
+                            transferId = transferId,
+                            isPaused = isPaused
+                        )
+                        fileTransferDao.updateProgress(transferId, "IN_PROGRESS", progress)
+
+                        delay(10) // Flow control
+                    }
+
+                    // Send COMPLETE
+                    bluetoothManager.sendMessage(
+                        Message(MessageType.FILE_TRANSFER_COMPLETE, transferId)
+                    )
+                    _transferState.value = FileTransferState.Completed(file.name, transferId)
+                    fileTransferDao.markCompleted(transferId)
+                    Timber.i("File transfer completed: ${file.name}")
+
+                } catch (e: Exception) {
+                    Timber.e(e, "File transfer failed")
+                    _transferState.value = FileTransferState.Failed(e.message ?: "Unknown error")
+                    fileTransferDao.markFailed(transferId)
                 }
-
-                // Send COMPLETE
-                bluetoothManager.sendMessage(Message(MessageType.FILE_TRANSFER_COMPLETE, transferId))
-                _transferState.value = FileTransferState.Completed(file.name, transferId)
-                fileTransferDao.markCompleted(transferId)
-                Timber.i("File transfer completed: ${file.name}")
-
-            } catch (e: Exception) {
-                Timber.e(e, "File transfer failed")
-                _transferState.value = FileTransferState.Failed(e.message ?: "Unknown error")
-                fileTransferDao.markFailed(transferId)
             }
+        }
+    }
+
+    private fun computeFileChecksum(file: File, key: ByteArray): String {
+        // Compute plaintext checksum for integrity
+        return try {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            FileInputStream(file).use { input ->
+                val buf = ByteArray(8192)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            android.util.Base64.encodeToString(md.digest(), android.util.Base64.NO_WRAP)
+        } catch (e: Exception) {
+            Timber.w(e, "Checksum compute failed")
+            ""
         }
     }
 
@@ -165,7 +203,9 @@ class FileTransferRepository @Inject constructor(
         if (state is FileTransferState.Transferring) {
             _transferState.value = state.copy(isPaused = true)
             currentTransferId?.let {
-                scope.launch { bluetoothManager.sendMessage(Message(MessageType.FILE_TRANSFER_PAUSE, it)) }
+                scope.launch {
+                    bluetoothManager.sendMessage(Message(MessageType.FILE_TRANSFER_PAUSE, it))
+                }
             }
         }
     }
@@ -176,7 +216,9 @@ class FileTransferRepository @Inject constructor(
         if (state is FileTransferState.Transferring) {
             _transferState.value = state.copy(isPaused = false)
             currentTransferId?.let {
-                scope.launch { bluetoothManager.sendMessage(Message(MessageType.FILE_TRANSFER_RESUME, it)) }
+                scope.launch {
+                    bluetoothManager.sendMessage(Message(MessageType.FILE_TRANSFER_RESUME, it))
+                }
             }
         }
     }
@@ -198,11 +240,13 @@ class FileTransferRepository @Inject constructor(
         return when (ext) {
             "jpg", "jpeg" -> "image/jpeg"
             "png" -> "image/png"
-            "mp4" -> "video/mp4"
-            "mp3" -> "audio/mpeg"
+            "gif", "webp" -> "image/$ext"
+            "mp4", "mkv", "webm" -> "video/$ext"
+            "mp3", "aac", "wav", "ogg" -> "audio/$ext"
             "pdf" -> "application/pdf"
             "zip" -> "application/zip"
             "apk" -> "application/vnd.android.package-archive"
+            "txt" -> "text/plain"
             else -> "application/octet-stream"
         }
     }

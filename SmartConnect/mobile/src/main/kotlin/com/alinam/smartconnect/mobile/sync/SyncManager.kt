@@ -5,6 +5,7 @@ import android.content.Context
 import android.media.AudioManager
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.Build
 import com.alinam.smartconnect.mobile.bluetooth.BluetoothManager
 import com.alinam.smartconnect.mobile.data.repository.DeviceInfoRepository
@@ -93,7 +94,6 @@ class SyncManager @Inject constructor(
 
     private fun getActiveMediaInfo(): MediaInfoPayload? {
         return try {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return null
             val msm = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
                 ?: return null
             // Requires MEDIA_CONTENT_CONTROL or notification listener
@@ -102,7 +102,7 @@ class SyncManager @Inject constructor(
             } catch (se: SecurityException) {
                 emptyList()
             }
-            val active = controllers.firstOrNull { it.playbackState?.state == 3 } // STATE_PLAYING = 3
+            val active = controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
                 ?: controllers.firstOrNull()
                 ?: return null
             val metadata = active.metadata ?: return null
@@ -111,7 +111,7 @@ class SyncManager @Inject constructor(
                 title = metadata.getString(android.media.MediaMetadata.METADATA_KEY_TITLE) ?: "",
                 artist = metadata.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST) ?: "",
                 album = metadata.getString(android.media.MediaMetadata.METADATA_KEY_ALBUM) ?: "",
-                isPlaying = playbackState?.state == 3,
+                isPlaying = playbackState?.state == PlaybackState.STATE_PLAYING,
                 duration = metadata.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION),
                 position = playbackState?.position ?: 0L
             )
@@ -159,7 +159,9 @@ class SyncManager @Inject constructor(
     private fun handleRemoteControl(payload: RemoteControlPayload) {
         // Phone-side remote control from watch
         when (payload.action) {
-            "VOLUME_UP", "VOLUME_DOWN" -> handleMediaControl(MediaControlPayload(payload.action))
+            "VOLUME_UP", "VOLUME_DOWN",
+            "PLAY", "PAUSE", "NEXT", "PREV" -> handleMediaControl(MediaControlPayload(payload.action))
+            // Other actions are watch-side only
         }
     }
 
@@ -186,15 +188,24 @@ class SyncManager @Inject constructor(
         // Flashlight strobe
         scope.launch {
             val camManager = context.getSystemService(android.hardware.camera2.CameraManager::class.java)
-            val cameraId = camManager?.cameraIdList?.firstOrNull() ?: return@launch
+                ?: return@launch
+            val cameraId = try {
+                camManager.cameraIdList.firstOrNull { id ->
+                    camManager.getCameraCharacteristics(id)
+                        .get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                } ?: camManager.cameraIdList.firstOrNull()
+            } catch (e: Exception) { null } ?: return@launch
             repeat(20) {
                 if (!isRinging) return@launch
                 try {
                     camManager.setTorchMode(cameraId, it % 2 == 0)
                     delay(300)
-                } catch (e: Exception) {}
+                } catch (e: Exception) {
+                    Timber.w(e, "Torch toggle failed")
+                    return@launch
+                }
             }
-            try { camManager?.setTorchMode(cameraId, false) } catch (e: Exception) {}
+            try { camManager.setTorchMode(cameraId, false) } catch (e: Exception) {}
         }
         bluetoothManager.sendMessage(Message(MessageType.FIND_DEVICE_ACK))
     }

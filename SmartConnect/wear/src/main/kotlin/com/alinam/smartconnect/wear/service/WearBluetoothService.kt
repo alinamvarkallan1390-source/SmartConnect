@@ -51,6 +51,7 @@ class WearBluetoothService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val gson = Gson()
     private var wakeLock: PowerManager.WakeLock? = null
+    private var deviceInfoJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -68,11 +69,12 @@ class WearBluetoothService : Service() {
             btManager.isConnected.collectLatest { connected ->
                 val text = if (connected) "گوشی متصل است" else "در حال اتصال..."
                 updateNotification(text)
+                // Always cancel any in-flight loop before starting fresh
+                deviceInfoJob?.cancel()
                 if (connected) {
                     vibrateHelper.shortVibrate()
                     showConnectionNotification()
-                    // Start sending device info periodically
-                    scope.launch { sendDeviceInfoLoop() }
+                    deviceInfoJob = scope.launch { sendDeviceInfoLoop() }
                 }
             }
         }
@@ -113,8 +115,11 @@ class WearBluetoothService : Service() {
             MessageType.SMS -> showSmsNotification(msg.payload)
             MessageType.HEARTBEAT -> btManager.sendMessage(Message(MessageType.HEARTBEAT_ACK))
             MessageType.FIND_PHONE -> {
-                // Phone is requesting to be found - just ack (actually handled on phone)
-                btManager.sendMessage(Message(MessageType.FIND_PHONE, ""))
+                // Phone initiated "find my watch"; the watch should beep/vibrate
+                vibrateHelper.continuousVibrate()
+            }
+            MessageType.FIND_PHONE_STOP -> {
+                vibrateHelper.stopVibrate()
             }
         }
     }
@@ -126,8 +131,16 @@ class WearBluetoothService : Service() {
                 "SET_BRIGHTNESS" -> setBrightness(ctrl.value.toIntOrNull() ?: 128)
                 "SET_VOLUME" -> setVolume(ctrl.value.toIntOrNull() ?: 7)
                 "VIBRATE" -> vibrateHelper.shortVibrate()
-                "REBOOT" -> { /* require REBOOT permission - notify user */ }
+                "REBOOT" -> {
+                    // REBOOT requires a privileged permission; ignore silently
+                    Timber.w("REBOOT requested but permission unavailable")
+                }
+                "SHUTDOWN" -> {
+                    // SHUTDOWN requires a privileged permission; ignore silently
+                    Timber.w("SHUTDOWN requested but permission unavailable")
+                }
                 "OPEN_SETTINGS" -> openSettings()
+                else -> Timber.w("Unknown remote action: ${ctrl.action}")
             }
         } catch (e: Exception) { Timber.e(e, "Remote control failed") }
     }
@@ -256,6 +269,7 @@ class WearBluetoothService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        deviceInfoJob?.cancel()
         wakeDetector.stop()
         btManager.disconnect()
         scope.cancel()

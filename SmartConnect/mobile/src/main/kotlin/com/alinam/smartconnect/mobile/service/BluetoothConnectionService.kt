@@ -46,6 +46,10 @@ class BluetoothConnectionService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var wakeLock: PowerManager.WakeLock? = null
     private var toneGenerator: ToneGenerator? = null
+    private var lastDistanceWarningMs = 0L
+    private var lastConnectedNotificationMs = 0L
+    private var lastConnectionSoundMs = 0L
+    private var lastConnectedAddress: String? = null
 
     companion object {
         const val NOTIF_ID = 1001
@@ -84,11 +88,14 @@ class BluetoothConnectionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> stopSelf()
+            ACTION_STOP -> {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
             ACTION_FIND_WATCH -> sendFindWatch()
             ACTION_STOP_FIND -> stopFindWatch()
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -102,13 +109,21 @@ class BluetoothConnectionService : Service() {
         super.onDestroy()
         // Restart service if killed
         val restartIntent = Intent(applicationContext, BluetoothConnectionService::class.java)
-        startService(restartIntent)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(restartIntent)
+        } else {
+            startService(restartIntent)
+        }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
         val restartIntent = Intent(applicationContext, BluetoothConnectionService::class.java)
-        startService(restartIntent)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(restartIntent)
+        } else {
+            startService(restartIntent)
+        }
     }
 
     // ====================================================
@@ -160,19 +175,49 @@ class BluetoothConnectionService : Service() {
                 when (state) {
                     ConnectionState.CONNECTED -> {
                         val name = bluetoothManager.connectedDevice.value?.name ?: "Watch"
+                        val address = bluetoothManager.connectedDevice.value?.address
                         updateNotification("متصل: $name", true)
-                        playConnectionSound()
-                        showConnectedNotification(name)
+                        // Throttle: only play sound & notification on a NEW device
+                        if (address != lastConnectedAddress) {
+                            lastConnectedAddress = address
+                            val now = System.currentTimeMillis()
+                            if (now - lastConnectionSoundMs > 5_000) {
+                                playConnectionSound()
+                                lastConnectionSoundMs = now
+                            }
+                            if (now - lastConnectedNotificationMs > 5_000) {
+                                showConnectedNotification(name)
+                                lastConnectedNotificationMs = now
+                            }
+                        }
                         syncManager.startSync()
-                        scope.launch {
-                            connectionRepository.saveLastConnection(
-                                bluetoothManager.connectedDevice.value?.address ?: ""
-                            )
+                        if (!address.isNullOrEmpty()) {
+                            scope.launch {
+                                connectionRepository.saveLastConnection(address)
+                            }
+                            // Log connection event
+                            scope.launch {
+                                connectionRepository.logConnection(
+                                    address = address,
+                                    name = name,
+                                    rssi = bluetoothManager.rssi.value
+                                )
+                            }
                         }
                     }
                     ConnectionState.DISCONNECTED -> {
                         updateNotification("قطع ارتباط", false)
                         syncManager.stopSync()
+                        // Log disconnection
+                        val last = bluetoothManager.connectedDevice.value
+                        scope.launch {
+                            connectionRepository.logDisconnection(
+                                address = last?.address ?: lastConnectedAddress ?: "",
+                                name = last?.name ?: "",
+                                durationSeconds = 0
+                            )
+                        }
+                        lastConnectedAddress = null
                     }
                     ConnectionState.SCANNING -> updateNotification("در حال جستجو...", false)
                     ConnectionState.CONNECTING -> updateNotification("در حال اتصال...", false)
@@ -188,11 +233,15 @@ class BluetoothConnectionService : Service() {
                 handleMessage(message)
             }
         }
-        // Monitor RSSI for distance warnings
+        // Monitor RSSI for distance warnings (throttled to once per 30s)
         scope.launch {
             bluetoothManager.rssi.collect { rssi ->
                 if (rssi < -85 && bluetoothManager.connectionState.value == ConnectionState.CONNECTED) {
-                    showDistanceWarning()
+                    val now = System.currentTimeMillis()
+                    if (now - lastDistanceWarningMs > 30_000) {
+                        lastDistanceWarningMs = now
+                        showDistanceWarning()
+                    }
                 }
             }
         }
@@ -202,8 +251,12 @@ class BluetoothConnectionService : Service() {
         when (message.type) {
             MessageType.FIND_DEVICE_ACK -> {}
             MessageType.HEARTBEAT_ACK -> {}
-            MessageType.DEVICE_INFO -> {
+            MessageType.DEVICE_INFO, MessageType.DEVICE_INFO_RESPONSE -> {
                 scope.launch { deviceInfoRepository.updateWatchInfo(message.payload) }
+            }
+            MessageType.HANDSHAKE -> {
+                // Acknowledge handshake from wear
+                bluetoothManager.sendMessage(Message(MessageType.HANDSHAKE_ACK))
             }
             else -> syncManager.processMessage(message)
         }
@@ -258,7 +311,17 @@ class BluetoothConnectionService : Service() {
         wakeLock = pm.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "SmartConnect::ConnectionLock"
-        ).also { it.acquire(10 * 60 * 1000L) }
+        ).also { it.acquire(60 * 60 * 1000L /* 1 hour, refreshed periodically */) }
+        // Periodic refresh to prevent expiration
+        scope.launch {
+            while (wakeLock?.isHeld == true) {
+                kotlinx.coroutines.delay(15 * 60 * 1000L) // every 15 minutes
+                if (wakeLock?.isHeld == true) {
+                    wakeLock?.release()
+                    wakeLock?.acquire(60 * 60 * 1000L)
+                }
+            }
+        }
     }
 
     private fun registerBtReceiver() {

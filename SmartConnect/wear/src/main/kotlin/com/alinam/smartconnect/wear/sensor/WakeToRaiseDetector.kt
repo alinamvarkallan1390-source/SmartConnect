@@ -116,8 +116,8 @@ class WakeToRaiseDetector @Inject constructor(
     private fun wakeScreen() {
         try {
             screenOnJob?.cancel()
-            // Acquire wake lock to turn screen on
-            wakeLock?.release()
+            // Release any prior wake lock first to avoid leaks
+            releaseWakeLock()
             wakeLock = powerManager.newWakeLock(
                 PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
                 "SmartConnect:WakeToRaise"

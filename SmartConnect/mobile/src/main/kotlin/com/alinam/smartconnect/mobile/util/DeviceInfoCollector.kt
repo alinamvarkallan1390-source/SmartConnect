@@ -152,11 +152,17 @@ class DeviceInfoCollector @Inject constructor(
     }
 
     private fun getTopApp(): String {
+        // getRunningTasks() is restricted to system apps on API 30+.
+        // For non-system apps, return an empty string instead of risking SecurityException.
         return try {
-            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            @Suppress("DEPRECATION")
-            val tasks = am.getRunningTasks(1)
-            tasks.firstOrNull()?.topActivity?.packageName ?: ""
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                "" // Requires UsageStatsManager.permission which we don't have
+            } else {
+                @Suppress("DEPRECATION")
+                val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                val tasks = am.getRunningTasks(1)
+                tasks.firstOrNull()?.topActivity?.packageName ?: ""
+            }
         } catch (e: Exception) { "" }
     }
 }
