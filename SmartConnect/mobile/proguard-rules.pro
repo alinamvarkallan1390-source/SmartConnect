@@ -1,0 +1,5 @@
+-keep class com.alinam.smartconnect.** { *; }
+-keep class com.google.gson.** { *; }
+-keepattributes Signature
+-keepattributes *Annotation*
+-dontwarn javax.annotation.**
