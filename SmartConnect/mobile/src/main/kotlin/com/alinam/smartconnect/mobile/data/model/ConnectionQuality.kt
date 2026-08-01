@@ -4,6 +4,7 @@ enum class ConnectionQuality {
     EXCELLENT,
     GOOD,
     FAIR,
+    WEAK,
     POOR,
     UNKNOWN;
 }
@@ -12,7 +13,8 @@ fun ConnectionQuality.toLabel(): String = when (this) {
     ConnectionQuality.EXCELLENT -> "عالی"
     ConnectionQuality.GOOD -> "خوب"
     ConnectionQuality.FAIR -> "متوسط"
-    ConnectionQuality.POOR -> "ضعیف"
+    ConnectionQuality.WEAK -> "ضعیف"
+    ConnectionQuality.POOR -> "خیلی ضعیف"
     ConnectionQuality.UNKNOWN -> "نامشخص"
 }
 
@@ -20,6 +22,7 @@ fun ConnectionQuality.toColor(): Int = when (this) {
     ConnectionQuality.EXCELLENT -> 0xFF00E676.toInt()
     ConnectionQuality.GOOD -> 0xFF76FF03.toInt()
     ConnectionQuality.FAIR -> 0xFFFFD740.toInt()
+    ConnectionQuality.WEAK -> 0xFFFF9100.toInt()
     ConnectionQuality.POOR -> 0xFFFF1744.toInt()
     ConnectionQuality.UNKNOWN -> 0xFF9E9E9E.toInt()
 }
