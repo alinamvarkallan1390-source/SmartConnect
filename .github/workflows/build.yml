@@ -20,24 +20,40 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
     
-    - name: Download gradlew
-      run: |
-        wget https://raw.githubusercontent.com/gradle/gradle/master/gradlew -O gradlew
-        chmod +x gradlew
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Accept Android SDK licenses
+      run: yes | sdkmanager --licenses
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
+      with:
+        gradle-version: "8.6"
+        build-root-directory: SmartConnect
+
+    - name: Generate Gradle Wrapper JAR
+      working-directory: SmartConnect
+      run: gradle wrapper --gradle-version=8.6 --no-daemon
     
-    - name: Build Debug APKs
-      run: ./gradlew assembleDebug --no-daemon --stacktrace
+    - name: Build Mobile Debug APK
+      working-directory: SmartConnect
+      run: ./gradlew :mobile:assembleDebug --no-daemon --stacktrace
+    
+    - name: Build Wear Debug APK
+      working-directory: SmartConnect
+      run: ./gradlew :wear:assembleDebug --no-daemon --stacktrace
     
     - name: Upload Mobile APK
       uses: actions/upload-artifact@v4
       with:
         name: mobile-debug-apk
-        path: mobile/build/outputs/apk/debug/mobile-debug.apk
+        path: SmartConnect/mobile/build/outputs/apk/debug/*.apk
         if-no-files-found: error
-    
+
     - name: Upload Wear APK
       uses: actions/upload-artifact@v4
       with:
         name: wear-debug-apk
-        path: wear/build/outputs/apk/debug/wear-debug.apk
-        if-no-files-found: error
+        path: SmartConnect/wear/build/outputs/apk/debug/*.apk
+        if-no-files-found: warn
