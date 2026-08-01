@@ -1,62 +1,41 @@
-name: Build APK
+name: Build APKs
 
 on:
   push:
-    branches: ["**"]
+    branches: [ main, master ]
   pull_request:
-    branches: ["**"]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Mobile & Wear APKs
     runs-on: ubuntu-latest
-
-    # پروژه‌ی Gradle داخل این پوشه قرار دارد
-    defaults:
-      run:
-        working-directory: SmartConnect
-
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: "17"
-          distribution: "temurin"
-          cache: gradle
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.6"
-
-      - name: Build Mobile Debug APK
-        run: gradle :mobile:assembleDebug --stacktrace --no-daemon --no-configuration-cache
-
-      - name: Build Wear Debug APK
-        run: gradle :wear:assembleDebug --stacktrace --no-daemon --no-configuration-cache
-
-      - name: Upload Mobile APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: SmartConnect-Mobile-APK
-          path: SmartConnect/mobile/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload Wear APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: SmartConnect-Wear-APK
-          path: SmartConnect/wear/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
-          retention-days: 30
+    - uses: actions/checkout@v4
+    
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+    
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+    
+    - name: Build Debug APKs
+      run: ./gradlew assembleDebug --no-daemon --stacktrace
+    
+    - name: Upload Mobile APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: mobile-debug-apk
+        path: mobile/build/outputs/apk/debug/mobile-debug.apk
+        if-no-files-found: error
+    
+    - name: Upload Wear APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: wear-debug-apk
+        path: wear/build/outputs/apk/debug/wear-debug.apk
+        if-no-files-found: error
