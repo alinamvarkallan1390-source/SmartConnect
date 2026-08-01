@@ -10,16 +10,16 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
-    
+
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 
@@ -35,15 +35,15 @@ jobs:
     - name: Generate Gradle Wrapper JAR
       working-directory: SmartConnect
       run: gradle wrapper --gradle-version=8.6 --no-daemon
-    
+
     - name: Build Mobile Debug APK
       working-directory: SmartConnect
       run: ./gradlew :mobile:assembleDebug --no-daemon --stacktrace
-    
+
     - name: Build Wear Debug APK
       working-directory: SmartConnect
       run: ./gradlew :wear:assembleDebug --no-daemon --stacktrace
-    
+
     - name: Upload Mobile APK
       uses: actions/upload-artifact@v4
       with:
