@@ -33,7 +33,7 @@ fun FileTransferScreen(
     viewModel: FileTransferViewModel = hiltViewModel()
 ) {
     val transferState by viewModel.transferState.collectAsStateWithLifecycle()
-    val allTransfers by viewModel.allTransfers.collectAsStateWithLifecycle(initial = emptyList())
+    val allTransfers by viewModel.allTransfers.collectAsStateWithLifecycle(initialValue = emptyList())
 
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
