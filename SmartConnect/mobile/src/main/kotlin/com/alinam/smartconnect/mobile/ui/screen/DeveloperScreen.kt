@@ -89,13 +89,11 @@ fun DeveloperScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = {
                             viewModel.sendRemoteControl("SET_BRIGHTNESS", "128")
-                            logText += "Sent SET_BRIGHTNESS 128
-"
+                            logText += "Sent SET_BRIGHTNESS 128\n"
                         }) { Text("Brightness 50%") }
                         OutlinedButton(onClick = {
                             viewModel.findWatch()
-                            logText += "Sent FIND_WATCH
-"
+                            logText += "Sent FIND_WATCH\n"
                         }) { Text("Find Watch") }
                     }
                 }
