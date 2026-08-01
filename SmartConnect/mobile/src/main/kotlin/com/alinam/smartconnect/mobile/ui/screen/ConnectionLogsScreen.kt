@@ -30,7 +30,7 @@ fun ConnectionLogsScreen(
     navController: NavController,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
-    val logs by viewModel.connectionLogs.collectAsStateWithLifecycle(initial = emptyList())
+    val logs by viewModel.connectionLogs.collectAsStateWithLifecycle(initialValue = emptyList())
 
     Scaffold(
         topBar = {
