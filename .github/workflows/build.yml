@@ -20,8 +20,10 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
     
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+    - name: Download gradlew
+      run: |
+        wget https://raw.githubusercontent.com/gradle/gradle/master/gradlew -O gradlew
+        chmod +x gradlew
     
     - name: Build Debug APKs
       run: ./gradlew assembleDebug --no-daemon --stacktrace
