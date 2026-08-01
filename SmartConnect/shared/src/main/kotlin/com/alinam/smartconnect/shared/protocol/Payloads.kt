@@ -13,7 +13,7 @@ data class RemoteControlPayload(
 )
 
 data class NotificationPayload(
-    val id: Int,
+    val id: Int = 0,
     val packageName: String,
     val appName: String,
     val title: String,
@@ -75,4 +75,19 @@ data class AlertPayload(
     val level: String, // INFO, WARNING, ERROR
     val title: String,
     val message: String
+)
+
+data class CallEventPayload(
+    val state: String,   // RINGING, ACTIVE, ENDED
+    val number: String,
+    val contactName: String = ""
+)
+
+data class MediaInfoPayload(
+    val title: String,
+    val artist: String,
+    val album: String,
+    val isPlaying: Boolean,
+    val duration: Long,
+    val position: Long
 )
